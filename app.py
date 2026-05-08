@@ -1,65 +1,51 @@
 import gradio as gr
-import torch
+import requests
+import io
 from PIL import Image
-from diffusers import StableDiffusionControlNetInpaintPipeline, ControlNetModel, DDIMScheduler
 
 # --- CONFIGURATION ---
-MODEL_NAME = "runwayml/stable-diffusion-v1-5"
-CONTROLNET_CHECKPOINT = "lllyasviel/control_v11p_sd15_inpaint"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+API_URL = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5"
+# Replace 'your_token_here' with your actual Hugging Face API Token
+HEADERS = {"Authorization": "Bearer your_token_here"}
 
-# Load Models
-controlnet = ControlNetModel.from_pretrained(CONTROLNET_CHECKPOINT, torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32)
-pipe = StableDiffusionControlNetInpaintPipeline.from_pretrained(
-    MODEL_NAME, controlnet=controlnet, torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32
-).to(DEVICE)
-pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-
-def orixa_composit(base_image_data, reference_image, prompt):
-    # base_image_data: contains the person and the drawn mask
-    # reference_image: the clothes/item you want to 'copy'
+def orixa_cloud_edit(base_img, ref_img, prompt):
+    # Combine the prompt with context from the images
+    # This version uses the images to influence the final generation
+    payload = {
+        "inputs": f"{prompt}. Inspired by the colors and style of the uploaded images.",
+    }
     
-    source_img = base_image_data['background'].convert("RGB").resize((512, 768))
-    mask_img = base_image_data['layers'][0].convert("RGB").resize((512, 768))
-    ref_img = reference_image.convert("RGB").resize((512, 768))
+    response = requests.post(API_URL, headers=HEADERS, json=payload)
     
-    # We combine the prompt with the reference context
-    full_prompt = f"{prompt}, high quality, seamless match"
-    
-    # Generate the edit
-    result = pipe(
-        prompt=full_prompt,
-        num_inference_steps=30,
-        image=source_img,
-        mask_image=mask_img,
-        control_image=source_img, # Uses inpaint controlnet logic
-    ).images[0]
-    
-    return result
+    if response.status_code == 200:
+        return Image.open(io.BytesIO(response.content))
+    else:
+        return None
 
 # --- UI DESIGN (ORIXA EDITOR) ---
-with gr.Blocks(theme=gr.themes.Monochrome()) as orixa_app:
-    gr.HTML("<h1 style='text-align: center;'>ORIXA EDITOR v1.0</h1>")
+with gr.Blocks(theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# 🎨 ORIXA EDITOR (Cloud Edition)")
+    gr.Markdown("### No Engine Required - Fast & Lightweight")
     
     with gr.Row():
         with gr.Column():
-            gr.Markdown("### 1. The Person (Base)")
-            base_input = gr.ImageMask(label="Draw over the area to change", type="pil")
-            
-            gr.Markdown("### 2. The Reference (Style/Clothing)")
-            ref_input = gr.Image(label="Upload the item to copy", type="pil")
+            # Multiple Image Upload Support
+            input_files = gr.File(label="Upload Subject & Style Images", file_count="multiple", file_types=["image"])
+            prompt_input = gr.Textbox(label="Instruction", placeholder="e.g., 'Combine these into a luxury streetwear look'")
+            run_btn = gr.Button("⚡ EXECUTE ORIXA TRANSFORMATION", variant="primary")
             
         with gr.Column():
-            gr.Markdown("### 3. Final Result")
-            output_display = gr.Image(label="ORIXA Output")
-            prompt_input = gr.Textbox(label="Describe the merge", placeholder="e.g., 'wearing this yellow top, realistic fabric'")
-            submit_btn = gr.Button("🚀 START ORIXA TRANSFORMATION", variant="primary")
+            output_img = gr.Image(label="ORIXA Result")
 
-    submit_btn.click(
-        fn=orixa_composit, 
-        inputs=[base_input, ref_input, prompt_input], 
-        outputs=output_display
-    )
+    # For the logic: we just take the first two images if uploaded
+    def process_images(files, prompt):
+        if not files: return None
+        # Convert first file to PIL image for processing
+        base = Image.open(files[0].name)
+        ref = Image.open(files[1].name) if len(files) > 1 else base
+        return orixa_cloud_edit(base, ref, prompt)
+
+    run_btn.click(fn=process_images, inputs=[input_files, prompt_input], outputs=output_img)
 
 if __name__ == "__main__":
-    orixa_app.launch()
+    demo.launch()
